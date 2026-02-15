@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Monitoring Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; }
+        header {
+            background: #16213e;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #0f3460;
+        }
+        header h1 { font-size: 1.4rem; color: #e94560; }
+        #status-badge {
+            padding: 0.3rem 1rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+        .connected { background: #0f3460; color: #00d2ff; }
+        .disconnected { background: #3a0000; color: #e94560; }
+        .container { display: flex; height: calc(100vh - 60px); }
+        #map { flex: 1; }
+        .sidebar {
+            width: 320px;
+            background: #16213e;
+            padding: 1.5rem;
+            overflow-y: auto;
+            border-left: 2px solid #0f3460;
+        }
+        .sidebar h2 { font-size: 1rem; color: #e94560; margin-bottom: 1rem; }
+        .info-card {
+            background: #1a1a2e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .info-card .label { font-size: 0.75rem; color: #888; text-transform: uppercase; }
+        .info-card .value { font-size: 1.2rem; font-weight: bold; margin-top: 0.3rem; }
+        #log {
+            font-family: monospace;
+            font-size: 0.8rem;
+            max-height: 200px;
+            overflow-y: auto;
+            background: #0a0a1a;
+            border-radius: 8px;
+            padding: 0.8rem;
+        }
+        #log p { margin: 0.2rem 0; color: #aaa; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Robot Monitoring Dashboard</h1>
+        <span id="status-badge" class="disconnected">Disconnected</span>
+    </header>
+    <div class="container">
+        <div id="map"></div>
+        <div class="sidebar">
+            <h2>Robot Status</h2>
+            <div class="info-card">
+                <div class="label">Robot ID</div>
+                <div class="value" id="robot-id">-</div>
+            </div>
+            <div class="info-card">
+                <div class="label">Position (x, y)</div>
+                <div class="value" id="robot-pos">-</div>
+            </div>
+            <div class="info-card">
+                <div class="label">Status</div>
+                <div class="value" id="robot-status">-</div>
+            </div>
+            <div class="info-card">
+                <div class="label">Last Update</div>
+                <div class="value" id="robot-time">-</div>
+            </div>
+            <h2>Log</h2>
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // --- 설정 ---
+        const ROBOT_ID = "robot_1";
+        const WS_URL = `ws://${location.host}/ws/robot/${ROBOT_ID}`;
+
+        // --- 지도 초기화 (격자 기반, 시뮬레이션 좌표) ---
+        const map = L.map('map', {
+            crs: L.CRS.Simple,
+            minZoom: -2,
+            maxZoom: 4,
+        });
+
+        // 격자 범위 설정 (Gazebo 기본 월드 기준)
+        const bounds = [[-10, -10], [10, 10]];
+        L.rectangle(bounds, { color: '#0f3460', weight: 1, fillColor: '#0a0a1a', fillOpacity: 0.5 }).addTo(map);
+        map.fitBounds(bounds);
+
+        // 격자선
+        for (let i = -10; i <= 10; i++) {
+            L.polyline([[i, -10], [i, 10]], { color: '#1a2a4a', weight: 0.5 }).addTo(map);
+            L.polyline([[-10, i], [10, i]], { color: '#1a2a4a', weight: 0.5 }).addTo(map);
+        }
+
+        // 로봇 마커
+        const robotIcon = L.divIcon({
+            className: '',
+            html: '<div style="width:14px;height:14px;background:#e94560;border-radius:50%;border:2px solid #fff;box-shadow:0 0 10px #e94560;"></div>',
+            iconSize: [14, 14],
+            iconAnchor: [7, 7],
+        });
+        const marker = L.marker([0, 0], { icon: robotIcon }).addTo(map);
+        const trail = L.polyline([], { color: '#00d2ff', weight: 2, opacity: 0.6 }).addTo(map);
+
+        // --- WebSocket 연결 ---
+        let ws;
+        const badge = document.getElementById('status-badge');
+        const logEl = document.getElementById('log');
+
+        function addLog(msg) {
+            const p = document.createElement('p');
+            p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logEl.prepend(p);
+            if (logEl.children.length > 50) logEl.lastChild.remove();
+        }
+
+        function connect() {
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                badge.textContent = 'Connected';
+                badge.className = 'connected';
+                addLog('WebSocket connected');
+            };
+
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                // 마커 업데이트
+                const latlng = [data.y, data.x]; // Leaflet: [lat, lng]
+                marker.setLatLng(latlng);
+                trail.addLatLng(latlng);
+
+                // 사이드바 업데이트
+                document.getElementById('robot-id').textContent = data.robot_id;
+                document.getElementById('robot-pos').textContent = `(${data.x.toFixed(2)}, ${data.y.toFixed(2)})`;
+                document.getElementById('robot-status').textContent = data.status;
+                document.getElementById('robot-time').textContent = new Date(data.timestamp).toLocaleTimeString();
+
+                addLog(`Position: (${data.x.toFixed(2)}, ${data.y.toFixed(2)})`);
+            };
+
+            ws.onclose = () => {
+                badge.textContent = 'Disconnected';
+                badge.className = 'disconnected';
+                addLog('WebSocket disconnected. Reconnecting...');
+                setTimeout(connect, 3000);
+            };
+
+            ws.onerror = () => {
+                addLog('WebSocket error');
+                ws.close();
+            };
+        }
+
+        connect();
+    </script>
+</body>
+</html>

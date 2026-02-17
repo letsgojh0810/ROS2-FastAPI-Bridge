@@ -15,6 +15,8 @@ async def create_position(data: PositionIn, db: AsyncSession = Depends(get_db)):
     """ROS2 브릿지에서 로봇 위치 수신 -> DB 저장 -> WebSocket 브로드캐스트"""
     position = RobotPosition(**data.model_dump())
     db.add(position)
+    db.add(position)
+    
     await db.commit()
     await db.refresh(position)
 
